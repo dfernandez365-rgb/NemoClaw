@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -17,6 +17,18 @@ const RUNTIME_CONFIG_GUARD = path.join(
 );
 const ROOT_RUNTIME_IMAGE =
   "python:3.12-slim@sha256:cab2dbf575e971934a81e4622f5aba17aa7929719bd7e31033a3a83b97fd0464";
+
+function dockerAvailable(): boolean {
+  try {
+    execFileSync("docker", ["info"], { stdio: "ignore", timeout: 15_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const canRunRootContainer = process.platform === "linux" && dockerAvailable();
+
 const ROOT_CONTAINER_DRIVER = String.raw`
 import json
 import os
@@ -506,7 +518,7 @@ print(json.dumps({
   });
 
   // source-shape-contract: security -- Executes the shipped guard as root to prove real Linux repair and rollback metadata
-  it.skipIf(process.platform !== "linux")(
+  it.skipIf(!canRunRootContainer)(
     "restores exact locked posture after root-separated repair and later failure (#7033)",
     () => {
       const result = runRootContainerHarness(`${loadGuardModule}
@@ -627,7 +639,13 @@ with tempfile.TemporaryDirectory() as tmp:
     }))
 `);
 
-      expect(result.status, String(result.stderr)).toBe(0);
+      const failureDetails = [
+        `status: ${String(result.status)}`,
+        `signal: ${String(result.signal)}`,
+        `spawn error: ${result.error ? String(result.error) : "none"}`,
+        `stderr: ${String(result.stderr)}`,
+      ].join("\n");
+      expect(result.status, failureDetails).toBe(0);
       expect(JSON.parse(String(result.stdout))).toEqual({
         aborting_state: "shields-transition-aborting",
         applied_state: "shields-transition-applied",
