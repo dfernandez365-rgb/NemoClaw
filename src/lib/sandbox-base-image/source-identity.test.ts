@@ -113,6 +113,62 @@ function createGitFixtureWithReachableOriginTags(tags: string[]) {
   return root;
 }
 
+function recordGitCalls<T>(operation: (env: NodeJS.ProcessEnv) => T): {
+  calls: string[][];
+  result: T;
+} {
+  const harnessRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-git-call-log-"));
+  tmpRoots.push(harnessRoot);
+  const binDir = path.join(harnessRoot, "bin");
+  const callLog = path.join(harnessRoot, "calls.jsonl");
+  const gitWrapper = path.join(binDir, "git");
+  fs.mkdirSync(binDir, { mode: 0o700 });
+  fs.writeFileSync(
+    gitWrapper,
+    `#!/usr/bin/env node
+const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.NEMOCLAW_TEST_GIT_CALL_LOG, JSON.stringify(args) + "\\n");
+const child = spawnSync("git", args, {
+  env: { ...process.env, PATH: process.env.NEMOCLAW_TEST_REAL_GIT_PATH },
+  stdio: "inherit",
+});
+if (child.error) throw child.error;
+if (child.signal) process.kill(process.pid, child.signal);
+process.exit(child.status ?? 1);
+`,
+    { mode: 0o700 },
+  );
+
+  const realGitPath = String(gitEnv.PATH || process.env.PATH || "");
+  const result = operation({
+    ...gitEnv,
+    PATH: `${binDir}${path.delimiter}${realGitPath}`,
+    NEMOCLAW_TEST_GIT_CALL_LOG: callLog,
+    NEMOCLAW_TEST_REAL_GIT_PATH: realGitPath,
+  });
+  const calls = fs
+    .readFileSync(callLog, "utf-8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as string[]);
+  return { calls, result };
+}
+
+function reachabilityProbes(calls: string[][]): string[][] {
+  return calls.filter((args) => {
+    const commandIndex = args.indexOf("merge-base");
+    return commandIndex >= 0 && args[commandIndex + 1] === "--is-ancestor";
+  });
+}
+
+function reachabilityProbeCommit(args: string[]): string | null {
+  const commandIndex = args.indexOf("merge-base");
+  return commandIndex >= 0 ? (args[commandIndex + 2] ?? null) : null;
+}
+
 afterEach(() => {
   for (const root of tmpRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
@@ -203,7 +259,9 @@ describe("sandbox base-image source identity", () => {
     git(root, ["commit", "-m", "move off tag"]);
 
     expect(getVersionedBaseImageTags(root, gitEnv)).toEqual([]);
-    expect(getNearestVersionedBaseImageTags(root, gitEnv)).toEqual(["v0.0.42"]);
+    const recorded = recordGitCalls((env) => getNearestVersionedBaseImageTags(root, env));
+    expect(recorded.result).toEqual(["v0.0.42"]);
+    expect(reachabilityProbes(recorded.calls)).toHaveLength(0);
   });
 
   it("prefers the newest reachable origin release tag when local tags are stale", () => {
@@ -217,18 +275,69 @@ describe("sandbox base-image source identity", () => {
     git(root, ["add", "docs/release.md"]);
     git(root, ["commit", "-m", "release 42"]);
     git(root, ["tag", "-a", "v0.0.42", "-m", "v0.0.42"]);
+    const tagObject = git(root, ["rev-parse", "v0.0.42"]);
+    const peeledCommit = git(root, ["rev-parse", "v0.0.42^{}"]);
     git(root, ["push", "origin", "main", "refs/tags/v0.0.42"]);
     git(root, ["tag", "-d", "v0.0.42"]);
 
     expect(getVersionedBaseImageTags(root, gitEnv)).toEqual([]);
     expect(git(root, ["describe", "--tags", "--abbrev=0", "--match", "v*"])).toBe("v0.0.41");
-    expect(getNearestVersionedBaseImageTags(root, gitEnv)).toEqual(["v0.0.42"]);
+    const recorded = recordGitCalls((env) => getNearestVersionedBaseImageTags(root, env));
+    const probes = reachabilityProbes(recorded.calls);
+    expect(recorded.result).toEqual(["v0.0.42"]);
+    expect(probes).toHaveLength(1);
+    expect(tagObject).not.toBe(peeledCommit);
+    expect(reachabilityProbeCommit(probes[0])).toBe(peeledCommit);
+  });
+
+  it("checks remote release tags newest-first and stops at the first reachable commit", () => {
+    const root = createGitFixtureWithReachableOriginTags(["v0.0.41", "v0.0.42"]);
+    const reachableCommit = git(root, ["rev-parse", "v0.0.42^{}"]);
+    const tree = git(root, ["rev-parse", "HEAD^{tree}"]);
+    const unreachableCommit = git(root, ["commit-tree", tree, "-m", "unreachable release"]);
+    git(root, ["tag", "v0.0.43", unreachableCommit]);
+    git(root, ["push", "origin", "refs/tags/v0.0.43"]);
+
+    const recorded = recordGitCalls((env) => getNearestVersionedBaseImageTags(root, env));
+    const probes = reachabilityProbes(recorded.calls);
+    expect(recorded.result).toEqual(["v0.0.42"]);
+    expect(probes).toHaveLength(2);
+    expect(probes.map(reachabilityProbeCommit)).toEqual([unreachableCommit, reachableCommit]);
+  });
+
+  it("falls back to the nearest local tag after exhausting unreachable remote tags", () => {
+    const remote = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-unreachable-tags-remote-"));
+    tmpRoots.push(remote);
+    const root = createGitFixture();
+    git(remote, ["init", "--bare"]);
+    git(root, ["remote", "add", "origin", remote]);
+    git(root, ["tag", "v0.0.41"]);
+    const tree = git(root, ["rev-parse", "HEAD^{tree}"]);
+    const unreachableCommit = git(root, ["commit-tree", tree, "-m", "unreachable release"]);
+    git(root, ["tag", "v0.0.99", unreachableCommit]);
+    git(root, ["push", "origin", "main", "refs/tags/v0.0.99"]);
+
+    const recorded = recordGitCalls((env) => getNearestVersionedBaseImageTags(root, env));
+    const probes = reachabilityProbes(recorded.calls);
+    expect(recorded.result).toEqual(["v0.0.41"]);
+    expect(probes).toHaveLength(1);
+    expect(reachabilityProbeCommit(probes[0])).toBe(unreachableCommit);
+  });
+
+  it("preserves remote order for comparator-equivalent version tags", () => {
+    const root = createGitFixtureWithReachableOriginTags(["v0.0.79.0", "v0.0.79"]);
+
+    const recorded = recordGitCalls((env) => getNearestVersionedBaseImageTags(root, env));
+    expect(recorded.result).toEqual(["v0.0.79"]);
+    expect(reachabilityProbes(recorded.calls)).toHaveLength(1);
   });
 
   it("prefers a stable reachable origin release over a prerelease created later (#6624)", () => {
     const root = createGitFixtureWithReachableOriginTags(["v0.0.79", "v0.0.79-rc.1"]);
 
-    expect(getNearestVersionedBaseImageTags(root, gitEnv)).toEqual(["v0.0.79"]);
+    const recorded = recordGitCalls((env) => getNearestVersionedBaseImageTags(root, env));
+    expect(recorded.result).toEqual(["v0.0.79"]);
+    expect(reachabilityProbes(recorded.calls)).toHaveLength(1);
   });
 
   it("prefers a stable reachable origin release over a prerelease created earlier (#6624)", () => {
