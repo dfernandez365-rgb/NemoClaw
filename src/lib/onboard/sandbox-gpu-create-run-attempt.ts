@@ -9,7 +9,10 @@ import { getSandboxFailurePhase, isSandboxReady } from "../state/gateway";
 import type { SandboxGpuProofResult } from "../state/registry";
 import { classifySandboxCreateFailure } from "../validation";
 import { cliName } from "./branding";
-import { reportSandboxCreateFailure } from "./created-sandbox-failure";
+import {
+  reportSandboxCreateFailure,
+  reportSandboxReadinessFailure,
+} from "./created-sandbox-failure";
 import * as dockerGpuLocalInference from "./docker-gpu-local-inference";
 import type { SelectedDockerGpuRoute } from "./docker-gpu-route";
 import { createDockerGpuSandboxCreatePatch } from "./docker-gpu-sandbox-create";
@@ -184,12 +187,6 @@ export function createSandboxGpuCreateAttemptRunner(
       sleep: deps.sleep,
     });
     if (!readiness.ready) {
-      console.error("");
-      sandboxReadinessTracing.printReadinessFailure(
-        readiness,
-        input.sandboxName,
-        input.sandboxReadyTimeoutSecs,
-      );
       const canClassifyNativeReadiness =
         route === "native" &&
         input.gpuRoutePlan === "native-with-fallback" &&
@@ -204,6 +201,12 @@ export function createSandboxGpuCreateAttemptRunner(
         })
       ) {
         state.nativeRuntimeSnapshot = runtimeSnapshot;
+        console.error("");
+        sandboxReadinessTracing.printReadinessFailure(
+          readiness,
+          input.sandboxName,
+          input.sandboxReadyTimeoutSecs,
+        );
         return {
           ok: false,
           route,
@@ -214,26 +217,38 @@ export function createSandboxGpuCreateAttemptRunner(
           fallbackEligible: true,
         } as const;
       }
-      printSandboxCreateFailureDiagnostics(input.sandboxName, {
-        backupPath: input.restoreBackupPath,
-      });
-      if (compatibility) dockerGpuCreatePatch.printReadinessFailureIfEnabled();
-      else {
-        const deletion = deps.runOpenshell(["sandbox", "delete", input.sandboxName], {
-          ignoreError: true,
-          suppressOutput: true,
-        });
-        const { alreadyGone } = getSandboxDeleteOutcome({
-          status: deletion.status ?? null,
-          stdout: String(deletion.stdout ?? ""),
-          stderr: String(deletion.stderr ?? ""),
-        });
-        if (Number(deletion.status ?? 1) !== 0 && !alreadyGone) {
-          console.error("  The failed sandbox could not be removed automatically.");
-          console.error(`  Manual cleanup: openshell sandbox delete "${input.sandboxName}"`);
-        } else console.error(`  Retry: ${cliName()} onboard`);
-      }
-      process.exit(createResult.status === 0 ? 1 : createResult.status);
+      reportSandboxReadinessFailure(
+        {
+          sandboxName: input.sandboxName,
+          readiness,
+          createStatus: createResult.status,
+          timeoutSecs: input.sandboxReadyTimeoutSecs,
+          restoreBackupPath: input.restoreBackupPath,
+          useDockerGpuPatch: compatibility,
+        },
+        {
+          printReadinessFailure: (result, name, timeoutSecs) =>
+            sandboxReadinessTracing.printReadinessFailure(result, name, timeoutSecs),
+          printCreateFailureDiagnostics: printSandboxCreateFailureDiagnostics,
+          printDockerGpuReadinessFailure: () =>
+            dockerGpuCreatePatch.printReadinessFailureIfEnabled(),
+          deleteSandbox: (name) => {
+            const deletion = deps.runOpenshell(["sandbox", "delete", name], {
+              ignoreError: true,
+              suppressOutput: true,
+            });
+            const { alreadyGone } = getSandboxDeleteOutcome({
+              status: deletion.status ?? null,
+              stdout: String(deletion.stdout ?? ""),
+              stderr: String(deletion.stderr ?? ""),
+            });
+            return { status: deletion.status ?? null, alreadyGone };
+          },
+          cliName,
+          error: (message) => console.error(message),
+          exitProcess: (code) => process.exit(code),
+        },
+      );
     }
     if (input.sandboxGpuConfig.sandboxGpuEnabled) {
       const deferNativeProofFailure =
