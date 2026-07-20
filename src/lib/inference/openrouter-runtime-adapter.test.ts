@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { EventEmitter } from "node:events";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -186,10 +187,19 @@ describe("OpenRouter Runtime adapter", () => {
     expect(upstreamHandler).not.toHaveBeenCalled();
   });
 
-  it("returns a generic error when upstream connection details fail (#5826)", async () => {
+  it("redacts immediate upstream connection errors (#7248)", async () => {
+    const request = Object.assign(new EventEmitter(), {
+      destroy: vi.fn(),
+      end: vi.fn(() => {
+        queueMicrotask(() => {
+          request.emit("error", new Error("connect ECONNREFUSED 127.0.0.1:43119"));
+        });
+      }),
+    }) as unknown as http.ClientRequest;
+    vi.spyOn(http, "request").mockReturnValue(request);
     const adapter = createTestAdapter({
-      upstreamBaseUrl: "http://127.0.0.1:1/api/v1",
-      upstreamTimeoutMs: 100,
+      upstreamBaseUrl: "http://upstream.invalid/api/v1",
+      upstreamTimeoutMs: 1_000,
     });
     const adapterBaseUrl = await listen(adapter);
 
@@ -210,6 +220,66 @@ describe("OpenRouter Runtime adapter", () => {
     });
     expect(JSON.stringify(body)).not.toContain("127.0.0.1");
     expect(JSON.stringify(body)).not.toContain("ECONNREFUSED");
+  });
+
+  it("bounds pre-connect attempts with the total upstream deadline (#7248)", async () => {
+    const destroy = vi.fn((err?: Error) => {
+      request.emit("error", err);
+    });
+    const request = Object.assign(new EventEmitter(), {
+      destroy,
+      end: vi.fn(),
+      socket: null,
+    }) as unknown as http.ClientRequest;
+    const requestSpy = vi.spyOn(http, "request").mockReturnValue(request);
+    const adapter = createTestAdapter({
+      upstreamBaseUrl: "http://upstream.invalid/api/v1",
+      upstreamTimeoutMs: 25,
+    });
+    const adapterBaseUrl = await listen(adapter);
+
+    const startedAt = performance.now();
+    const response = await fetch(`${adapterBaseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_TEST_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: "moonshotai/kimi-k2.6", messages: [] }),
+    });
+
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+    expect(response.status).toBe(504);
+    const body = (await response.json()) as { error: { message: string; code: string } };
+    expect(body.error).toMatchObject({
+      message: "OpenRouter upstream request timed out.",
+      code: "upstream_timeout",
+    });
+    expect(JSON.stringify(body)).not.toContain("upstream.invalid");
+    expect(request.socket).toBeNull();
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(destroy).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "OpenRouter upstream request timed out." }),
+    );
+
+    const responseCallback = (
+      requestSpy.mock.calls[0] as unknown as [
+        URL,
+        http.RequestOptions,
+        (response: http.IncomingMessage) => void,
+      ]
+    )[2];
+    const lateDestroy = vi.fn();
+    const latePipe = vi.fn();
+    const lateUpstreamResponse = Object.assign(new EventEmitter(), {
+      destroy: lateDestroy,
+      headers: {},
+      pipe: latePipe,
+      statusCode: 200,
+    }) as unknown as http.IncomingMessage;
+    expect(() => responseCallback(lateUpstreamResponse)).not.toThrow();
+    expect(lateDestroy).toHaveBeenCalledOnce();
+    expect(latePipe).not.toHaveBeenCalled();
   });
 
   it("times out stalled upstream requests without hanging (#5826)", async () => {

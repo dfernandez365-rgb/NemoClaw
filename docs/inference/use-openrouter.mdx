@@ -45,6 +45,8 @@ The adapter does not store the API key.
 
 The adapter exposes a host health endpoint and writes logs to `~/.nemoclaw/openrouter-runtime-adapter.log`.
 Set `NEMOCLAW_OPENROUTER_RUNTIME_ADAPTER_PORT` before onboarding to use a different host port.
+Each outbound adapter request has a 30-second total deadline that includes DNS lookup and TCP and TLS connection setup.
+Deadline expiry returns a redacted HTTP `504` response with code `upstream_timeout`; other upstream connection failures return a redacted HTTP `502` response with code `openrouter_runtime_error`.
 
 ## Validation
 
