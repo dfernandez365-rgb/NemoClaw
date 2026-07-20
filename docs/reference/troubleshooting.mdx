@@ -1486,9 +1486,15 @@ $$nemoclaw onboard
 ```
 
 The variable accepts seconds and applies to the readiness wait only.
-When the deadline expires, NemoClaw prints a lifecycle receipt and attempts to delete the exact sandbox on ordinary routes.
-The retry hint appears only when deletion succeeds or the sandbox is already absent.
-Failed deletion retains the sandbox and prints manual cleanup guidance; compatibility routes defer cleanup to the GPU patch and do not advertise an immediate retry.
+When the deadline expires, NemoClaw prints a lifecycle receipt.
+Read `terminal_resolution` before you retry:
+
+- `timed_out_deleted` or `terminal_failure_deleted`: Cleanup deleted the sandbox or confirmed it was absent. The CLI prints a retry hint.
+- `timed_out_retained` or `terminal_failure_retained`: Deletion failed. The CLI treats the sandbox as retained and prints manual cleanup guidance.
+- `deferred_to_docker_gpu_patch`: The GPU compatibility path owns cleanup. The CLI does not print a retry hint.
+
+Do not retry when the CLI omits the retry hint.
+
 If readiness still fails after the extended budget, inspect the gateway and sandbox status:
 
 ```bash

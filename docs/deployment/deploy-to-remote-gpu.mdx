@@ -182,8 +182,14 @@ nemoclaw onboard
 ```
 
 If onboard ends with `Sandbox '<name>' was created but did not become ready within 180s`, it prints a lifecycle receipt.
-On ordinary routes, the retry hint appears only after deletion succeeds or confirms the sandbox is already absent; failed deletion retains the sandbox and prints manual cleanup guidance.
-Compatibility routes defer cleanup to the GPU patch and do not advertise an immediate retry.
+Read `terminal_resolution` before you retry:
+
+- `timed_out_deleted` or `terminal_failure_deleted`: Cleanup deleted the sandbox or confirmed it was absent. The CLI prints a retry hint.
+- `timed_out_retained` or `terminal_failure_retained`: Deletion failed. The CLI treats the sandbox as retained and prints manual cleanup guidance.
+- `deferred_to_docker_gpu_patch`: The GPU compatibility path owns cleanup. The CLI does not print a retry hint.
+
+Do not retry when the CLI omits the retry hint.
+
 For the inference-probe budget that runs earlier in onboarding, refer to [Configure Inference Timeouts](../inference/manage-inference/configure-inference-timeouts).
 
 ## Proxy Configuration
