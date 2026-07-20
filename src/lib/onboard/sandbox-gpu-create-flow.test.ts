@@ -133,6 +133,13 @@ function errorOutput(): string {
   return vi.mocked(console.error).mock.calls.flat().join("\n");
 }
 
+function expectLifecycleReceipt(expected: readonly string[]): void {
+  const lines = vi.mocked(console.error).mock.calls.flat().map(String);
+  const start = lines.indexOf("  Sandbox lifecycle receipt:");
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(lines.slice(start, start + expected.length)).toEqual(expected);
+}
+
 function createSourceInput(): SandboxGpuCreateFlowInput {
   const input = createInput();
   input.prebuild = {
@@ -400,6 +407,17 @@ describe("runSandboxGpuCreateFlow native failure and readiness", () => {
       ["sandbox", "delete", "alpha"],
       expect.objectContaining({ ignoreError: true }),
     );
+    expectLifecycleReceipt([
+      "  Sandbox lifecycle receipt:",
+      "    state: created_but_not_ready",
+      "    sandbox: alpha",
+      "    readiness_gate: sandbox_list:Failed",
+      "    readiness_reason: terminal_failure_phase",
+      "    create_stream_status: 0",
+      "    timeout_seconds: 60",
+      "    terminal_resolution: terminal_failure_deleted",
+    ]);
+    expect(errorOutput()).toContain("Retry: nemoclaw onboard");
     expect(mocks.streamSandboxCreate).toHaveBeenCalledOnce();
   });
 
@@ -421,6 +439,48 @@ describe("runSandboxGpuCreateFlow native failure and readiness", () => {
     );
 
     expect(exit).toHaveBeenCalledWith(23);
+    expectLifecycleReceipt([
+      "  Sandbox lifecycle receipt:",
+      "    state: created_but_not_ready",
+      "    sandbox: alpha",
+      "    readiness_gate: sandbox_list:not_ready_timeout",
+      "    readiness_reason: timeout",
+      "    create_stream_status: 23",
+      "    timeout_seconds: 60",
+      "    terminal_resolution: timed_out_deleted",
+    ]);
+  });
+
+  it("defers compatibility readiness cleanup without advertising an unsafe retry (#3344)", async () => {
+    const input = createInput();
+    input.gpuRoutePlan = "compatibility-only";
+    input.initialGpuRoute = "compatibility";
+    mocks.waitForCreatedSandboxReadyWithTrace.mockReturnValue({
+      ready: false,
+      reason: "timeout",
+      failurePhase: null,
+    });
+    const compatibilityPatch = createPatch();
+    mocks.createDockerGpuSandboxCreatePatch.mockReturnValue(compatibilityPatch);
+    const deps = createDeps();
+    await expectFlowExit(input, deps);
+
+    expectLifecycleReceipt([
+      "  Sandbox lifecycle receipt:",
+      "    state: created_but_not_ready",
+      "    sandbox: alpha",
+      "    readiness_gate: sandbox_list:not_ready_timeout",
+      "    readiness_reason: timeout",
+      "    create_stream_status: 0",
+      "    timeout_seconds: 60",
+      "    terminal_resolution: deferred_to_docker_gpu_patch",
+    ]);
+    expect(compatibilityPatch.printReadinessFailureIfEnabled).toHaveBeenCalledOnce();
+    expect(deps.runOpenshell).not.toHaveBeenCalledWith(
+      ["sandbox", "delete", "alpha"],
+      expect.anything(),
+    );
+    expect(errorOutput()).not.toContain("Retry: nemoclaw onboard");
   });
 
   it("keeps native readiness on the single-Ready contract", async () => {
@@ -456,6 +516,8 @@ describe("runSandboxGpuCreateFlow fallback ordering", () => {
     });
 
     expect(mocks.streamSandboxCreate).toHaveBeenCalledTimes(2);
+    expect(mocks.printReadinessFailure).toHaveBeenCalledOnce();
+    expect(errorOutput()).not.toContain("Sandbox lifecycle receipt");
   });
 
   it("streams native and compatibility attempts through direct argv without a shell (#6110)", async () => {
@@ -606,8 +668,18 @@ describe("runSandboxGpuCreateFlow cleanup and provenance", () => {
     await expectFlowExit(createInput(), deps);
 
     const output = vi.mocked(console.error).mock.calls.flat().join("\n");
-    expect(output).toContain("could not be removed automatically");
-    expect(output).toContain('Manual cleanup: openshell sandbox delete "alpha"');
+    expectLifecycleReceipt([
+      "  Sandbox lifecycle receipt:",
+      "    state: created_but_not_ready",
+      "    sandbox: alpha",
+      "    readiness_gate: sandbox_list:Failed",
+      "    readiness_reason: terminal_failure_phase",
+      "    create_stream_status: 0",
+      "    timeout_seconds: 60",
+      "    terminal_resolution: terminal_failure_retained",
+    ]);
+    expect(output).toContain("Could not remove the failed sandbox. Manual cleanup:");
+    expect(output).toContain('openshell sandbox delete "alpha"');
     expect(output).not.toContain("Retry: nemoclaw onboard");
   });
 
@@ -621,8 +693,21 @@ describe("runSandboxGpuCreateFlow cleanup and provenance", () => {
     await expectFlowExit(createInput(), deps);
 
     const output = vi.mocked(console.error).mock.calls.flat().join("\n");
+    expectLifecycleReceipt([
+      "  Sandbox lifecycle receipt:",
+      "    state: created_but_not_ready",
+      "    sandbox: alpha",
+      "    readiness_gate: sandbox_list:Failed",
+      "    readiness_reason: terminal_failure_phase",
+      "    create_stream_status: 0",
+      "    timeout_seconds: 60",
+      "    terminal_resolution: terminal_failure_deleted",
+    ]);
+    expect(output).toContain(
+      "Sandbox 'alpha' was already absent after the readiness gate failed; retry can recreate it.",
+    );
     expect(output).toContain("Retry: nemoclaw onboard");
-    expect(output).not.toContain("could not be removed automatically");
+    expect(output).not.toContain("Could not remove the failed sandbox");
   });
 
   it("fully redacts command diagnostics when cleanup cannot be proven safe", async () => {

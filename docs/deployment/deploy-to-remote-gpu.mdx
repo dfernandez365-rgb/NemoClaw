@@ -58,7 +58,7 @@ brev ssh <instance-name>
 ```
 
 Set any remote-only environment variables on the VM before onboarding.
-For example, set the browser origin if you will open the dashboard through a Brev public URL, raise the first-run readiness budget on cold cloud hosts, and then run the installer:
+For example, set the browser origin if you will open the dashboard through a Brev public URL, raise the post-create readiness budget when sandbox initialization is slow, and then run the installer:
 
 ```bash
 export CHAT_UI_URL="<copied-brev-tunnel-origin>"
@@ -171,7 +171,7 @@ The host builds the sandbox image locally and uploads it into the OpenShell gate
 The post-create readiness wait defaults to 180 seconds (`NEMOCLAW_SANDBOX_READY_TIMEOUT`), which fits warm-cache, workstation-class onboarding but can be too short for:
 
 - DGX Station first runs with large quantized models (70B+ parameter footprints, NVFP4 weights).
-- Cloud VMs where the local image-build cache is cold and the upload runs over the public network.
+- Resource-constrained cloud VMs where the created sandbox takes longer to initialize.
 - Hosts enabling a web search provider on the first run because the provider and egress policy stack add boot work.
 
 Raise the budget before re-running onboard:
@@ -181,7 +181,9 @@ export NEMOCLAW_SANDBOX_READY_TIMEOUT=600
 nemoclaw onboard
 ```
 
-If onboard ends with `Sandbox '<name>' was created but did not become ready within 180s`, onboard first deletes the partially created sandbox, so the next attempt with the raised budget starts from a clean state.
+If onboard ends with `Sandbox '<name>' was created but did not become ready within 180s`, it prints a lifecycle receipt.
+On ordinary routes, the retry hint appears only after deletion succeeds or confirms the sandbox is already absent; failed deletion retains the sandbox and prints manual cleanup guidance.
+Compatibility routes defer cleanup to the GPU patch and do not advertise an immediate retry.
 For the inference-probe budget that runs earlier in onboarding, refer to [Configure Inference Timeouts](../inference/manage-inference/configure-inference-timeouts).
 
 ## Proxy Configuration

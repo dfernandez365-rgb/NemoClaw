@@ -1457,17 +1457,26 @@ Onboarding ends with:
 
 ```text
   Sandbox 'my-assistant' was created but did not become ready within 180s.
-  The orphaned sandbox has been removed — you can safely retry.
+  Sandbox lifecycle receipt:
+    state: created_but_not_ready
+    sandbox: my-assistant
+    readiness_gate: sandbox_list:not_ready_timeout
+    readiness_reason: timeout
+    create_stream_status: 0
+    timeout_seconds: 180
+    terminal_resolution: timed_out_deleted
+  Deleted sandbox 'my-assistant' after the readiness gate failed; retry can recreate it.
+  Retry: $$nemoclaw onboard
 ```
 
 This is a separate budget from `NEMOCLAW_LOCAL_INFERENCE_TIMEOUT`.
 It covers the readiness wait that follows sandbox creation, including in-sandbox boot, OpenClaw start, and policy load.
-It does not cover the inference probe.
+It does not cover the inference probe, image build, or gateway upload.
 The 180-second default fits typical workstations but can be exceeded when:
 
-- The host is building or uploading the sandbox image for the first time (cold caches, slow link).
+- The created sandbox takes longer to initialize on a resource-constrained host.
 - The selected model is large (70B+ parameters or 4-bit/8-bit quantisations that take time to memory-map).
-- Onboarding runs on a remote VM where image upload to the gateway streams over the network (for example DGX Station first-run installer).
+- A provider and its egress policy stack add work during in-sandbox boot.
 
 Raise the budget before re-running onboard:
 
@@ -1477,7 +1486,9 @@ $$nemoclaw onboard
 ```
 
 The variable accepts seconds and applies to the readiness wait only.
-When the deadline expires, NemoClaw deletes the partially-created sandbox before printing the retry hint, so the next `$$nemoclaw onboard` starts from a clean state.
+When the deadline expires, NemoClaw prints a lifecycle receipt and attempts to delete the exact sandbox on ordinary routes.
+The retry hint appears only when deletion succeeds or the sandbox is already absent.
+Failed deletion retains the sandbox and prints manual cleanup guidance; compatibility routes defer cleanup to the GPU patch and do not advertise an immediate retry.
 If readiness still fails after the extended budget, inspect the gateway and sandbox status:
 
 ```bash
