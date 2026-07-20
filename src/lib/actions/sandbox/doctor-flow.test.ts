@@ -19,6 +19,7 @@ function createDoctorHarness(): {
   captureHostCommandSpy: MockInstance;
   configuredMessagingChannelsSpy: MockInstance;
   executeSandboxCommandForVerificationSpy: MockInstance;
+  executeGatewaySupervisorActionSpy: MockInstance;
   getSandboxSpy: MockInstance;
   getNamedGatewayLifecycleStateSpy: MockInstance;
   healthProbeSpy: MockInstance;
@@ -54,6 +55,7 @@ function createDoctorHarness(): {
   const doctorHostCommand = requireDist("./doctor-host-command.js");
   const doctorToolScope = requireDist("./doctor-tool-scope.js");
   const inferenceRouteHealth = requireDist("./inference-route-health.js");
+  const processRecovery = requireDist("./process-recovery.js");
 
   const getSandboxSpy = vi.spyOn(registry, "getSandbox").mockReturnValue({
     name: "alpha",
@@ -170,6 +172,13 @@ function createDoctorHarness(): {
       stdout: "ok",
       stderr: "",
     });
+  const executeGatewaySupervisorActionSpy = vi
+    .spyOn(processRecovery, "executeGatewaySupervisorAction")
+    .mockReturnValue({
+      status: 0,
+      stdout: "v1 nonce complete already-running 41 42\nGATEWAY_PID=42",
+      stderr: "",
+    });
   const buildToolScopeChecksSpy = vi
     .spyOn(doctorToolScope, "buildToolScopeChecks")
     .mockReturnValue([
@@ -196,6 +205,7 @@ function createDoctorHarness(): {
     captureOpenShellSpy,
     captureHostCommandSpy,
     configuredMessagingChannelsSpy,
+    executeGatewaySupervisorActionSpy,
     executeSandboxCommandForVerificationSpy,
     getSandboxSpy,
     getNamedGatewayLifecycleStateSpy,
@@ -244,6 +254,11 @@ describe("runSandboxDoctor flow", () => {
           expect.objectContaining({ group: "Gateway", label: "OpenShell status", status: "ok" }),
           expect.objectContaining({ group: "Sandbox", label: "Live sandbox", status: "ok" }),
           expect.objectContaining({
+            group: "Sandbox",
+            label: "Managed lifecycle",
+            status: "ok",
+          }),
+          expect.objectContaining({
             group: "Inference",
             label: "Provider health (upstream)",
             status: "ok",
@@ -264,8 +279,38 @@ describe("runSandboxDoctor flow", () => {
       );
       expect(exitSpy).not.toHaveBeenCalled();
       expect(harness.logSpy).not.toHaveBeenCalled();
+      expect(harness.executeGatewaySupervisorActionSpy).toHaveBeenCalledWith(
+        "alpha",
+        "probe",
+        15_000,
+      );
     },
   );
+
+  it("makes a managed lifecycle refusal fail JSON readiness without leaking output (#7142)", async () => {
+    const harness = createDoctorHarness();
+    harness.probeSandboxInferenceGatewayHealthSpy.mockResolvedValue({
+      ok: true,
+      endpoint: "https://inference.local/v1/models",
+      httpStatus: 200,
+      detail: "healthy",
+    });
+    harness.executeGatewaySupervisorActionSpy.mockReturnValue({
+      status: 1,
+      stdout: "Authorization: Bearer stdout-secret",
+      stderr:
+        "NVIDIA_API_KEY=stderr-secret\nSUPERVISOR_UNAVAILABLE\nNEMOCLAW_CONTROL_STAGE=preflight",
+    });
+
+    await expect(harness.runSandboxDoctor("alpha", ["--json"])).rejects.toThrow("process.exit(1)");
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const rendered = harness.logSpy.mock.calls.flat().join("\n");
+    expect(rendered).toContain("SUPERVISOR_UNAVAILABLE");
+    expect(rendered).toContain("preflight");
+    expect(rendered).not.toContain("stdout-secret");
+    expect(rendered).not.toContain("stderr-secret");
+  });
 
   it.each([
     "openclaw",
@@ -327,6 +372,11 @@ describe("runSandboxDoctor flow", () => {
     expect(harness.captureOpenShellSpy).not.toHaveBeenCalled();
     expect(harness.buildToolScopeChecksSpy).not.toHaveBeenCalled();
     expect(harness.probeSandboxInferenceGatewayHealthSpy).not.toHaveBeenCalled();
+    expect(harness.executeGatewaySupervisorActionSpy).toHaveBeenCalledWith(
+      "alpha",
+      "probe",
+      15_000,
+    );
   });
 
   it("does not run live or tool-scope probes when the named gateway is disconnected", async () => {
@@ -343,6 +393,11 @@ describe("runSandboxDoctor flow", () => {
 
     expect(harness.captureOpenShellSpy).not.toHaveBeenCalled();
     expect(harness.buildToolScopeChecksSpy).not.toHaveBeenCalled();
+    expect(harness.executeGatewaySupervisorActionSpy).toHaveBeenCalledWith(
+      "alpha",
+      "probe",
+      15_000,
+    );
     expect(harness.probeSandboxInferenceGatewayHealthSpy).not.toHaveBeenCalled();
     expect(harness.executeSandboxCommandForVerificationSpy).not.toHaveBeenCalled();
     expect(report?.checks).toEqual(
@@ -473,6 +528,7 @@ describe("runSandboxDoctor flow", () => {
     const report = await harness.runSandboxDoctor("alpha", ["--json"], { quietJson: true });
 
     expect(harness.buildToolScopeChecksSpy).not.toHaveBeenCalled();
+    expect(harness.executeGatewaySupervisorActionSpy).not.toHaveBeenCalled();
     expect(report?.checks).not.toContainEqual(
       expect.objectContaining({ group: "Inference", label: "Serving process" }),
     );
