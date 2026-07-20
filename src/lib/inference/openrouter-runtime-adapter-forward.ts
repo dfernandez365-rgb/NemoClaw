@@ -154,12 +154,15 @@ export async function forwardOpenRouterRequest(options: {
   }
   return new Promise((resolve) => {
     let settled = false;
+    let upstreamDeadline: ReturnType<typeof setTimeout> | undefined;
     const resolveOnce = (status: number) => {
       if (settled) return;
       settled = true;
+      if (upstreamDeadline) clearTimeout(upstreamDeadline);
       resolve(status);
     };
     const failRequest = (err: unknown) => {
+      if (settled) return;
       resolveOnce(sendForwardError(options.res, err));
     };
     const headers = buildForwardRequestHeaders(options.req);
@@ -171,6 +174,10 @@ export async function forwardOpenRouterRequest(options: {
         headers,
       },
       (upstreamRes) => {
+        if (settled) {
+          upstreamRes.destroy();
+          return;
+        }
         const status = upstreamRes.statusCode || 502;
         options.res.writeHead(status, buildForwardResponseHeaders(upstreamRes.headers));
         upstreamRes.once("aborted", () => {
@@ -187,14 +194,17 @@ export async function forwardOpenRouterRequest(options: {
         upstreamRes.once("end", () => resolveOnce(status));
       },
     );
-    upstreamReq.setTimeout(
-      options.upstreamTimeoutMs ?? OPENROUTER_RUNTIME_ADAPTER_UPSTREAM_TIMEOUT_MS,
-      () => {
-        upstreamReq.destroy(
-          new ForwardHttpError(504, "OpenRouter upstream request timed out.", "upstream_timeout"),
-        );
-      },
-    );
+    // ClientRequest.setTimeout starts only after socket connection. This timer
+    // bounds the complete attempt, including DNS, TCP, and TLS establishment.
+    upstreamDeadline = setTimeout(() => {
+      const err = new ForwardHttpError(
+        504,
+        "OpenRouter upstream request timed out.",
+        "upstream_timeout",
+      );
+      failRequest(err);
+      upstreamReq.destroy(err);
+    }, options.upstreamTimeoutMs ?? OPENROUTER_RUNTIME_ADAPTER_UPSTREAM_TIMEOUT_MS);
     upstreamReq.on("error", (err) => {
       failRequest(err);
     });
