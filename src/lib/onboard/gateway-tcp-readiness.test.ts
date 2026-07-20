@@ -35,10 +35,11 @@ function startDummyServer(): Promise<{ port: number; close: () => Promise<void> 
   });
 }
 
-async function getLikelyClosedPort(): Promise<number> {
-  const { port, close } = await startDummyServer();
-  await close();
-  return port;
+function emitConnectionRefused(socket: net.Socket): void {
+  socket.emit(
+    "error",
+    Object.assign(new Error("connect ECONNREFUSED 127.0.0.1"), { code: "ECONNREFUSED" }),
+  );
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -62,8 +63,15 @@ describe("isGatewayTcpReady (#3111)", () => {
   });
 
   it("resolves false when nothing is listening (Connection refused)", async () => {
-    const port = await getLikelyClosedPort();
-    await expect(isGatewayTcpReady(port, 500)).resolves.toBe(false);
+    // A just-closed real listener is not a portable ECONNREFUSED fixture:
+    // WSL mirrored networking can retain an accepting loopback path briefly.
+    const socket = new net.Socket();
+    vi.spyOn(net, "createConnection").mockReturnValue(socket);
+
+    const ready = isGatewayTcpReady(65535, 500, "127.0.0.1");
+    emitConnectionRefused(socket);
+
+    await expect(ready).resolves.toBe(false);
   });
 
   it("resolves false on timeout (non-routable host)", async () => {
@@ -106,8 +114,18 @@ describe("isGatewayTcpReady (#3111)", () => {
   });
 
   it("never throws — always resolves with a boolean", async () => {
-    await expect(isGatewayTcpReady(0, 100)).resolves.toBeTypeOf("boolean");
-    await expect(isGatewayTcpReady(65535, 100)).resolves.toBe(false);
+    const sockets = [new net.Socket(), new net.Socket()];
+    vi.spyOn(net, "createConnection")
+      .mockReturnValueOnce(sockets[0])
+      .mockReturnValueOnce(sockets[1]);
+
+    const zeroPortReady = isGatewayTcpReady(0, 100, "127.0.0.1");
+    emitConnectionRefused(sockets[0]);
+    await expect(zeroPortReady).resolves.toBeTypeOf("boolean");
+
+    const maxPortReady = isGatewayTcpReady(65535, 100, "127.0.0.1");
+    emitConnectionRefused(sockets[1]);
+    await expect(maxPortReady).resolves.toBe(false);
   });
 
   it("defaults to GATEWAY_PORT when no port is supplied", async () => {
