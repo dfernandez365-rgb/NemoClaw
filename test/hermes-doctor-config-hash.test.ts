@@ -27,6 +27,14 @@ describe("Hermes doctor and config hash boundary", () => {
       "nemoclaw",
       "patch-hermes-session-list-preview.py",
     );
+    const incompleteExitPatcher = path.join(
+      tmp,
+      "usr",
+      "local",
+      "lib",
+      "nemoclaw",
+      "patch-hermes-incomplete-chat-exit.py",
+    );
     const command = dockerRunCommandBetween(
       dockerfile,
       'RUN hermes_version_output="$(/usr/local/bin/hermes --version)"',
@@ -34,7 +42,11 @@ describe("Hermes doctor and config hash boundary", () => {
     )
       .replaceAll("/usr/local/bin/hermes", hermesBin)
       .replaceAll("/usr/local/lib/nemoclaw/hermes-wrapper.py", wrapper)
-      .replaceAll("/usr/local/lib/nemoclaw/patch-hermes-session-list-preview.py", previewPatcher);
+      .replaceAll("/usr/local/lib/nemoclaw/patch-hermes-session-list-preview.py", previewPatcher)
+      .replaceAll(
+        "/usr/local/lib/nemoclaw/patch-hermes-incomplete-chat-exit.py",
+        incompleteExitPatcher,
+      );
     try {
       fs.mkdirSync(path.dirname(hermesBin), { recursive: true });
       fs.mkdirSync(path.dirname(wrapper), { recursive: true });
@@ -43,6 +55,7 @@ describe("Hermes doctor and config hash boundary", () => {
       });
       fs.writeFileSync(wrapper, "# wrapper fixture without resumed oneshot marker\n");
       fs.writeFileSync(previewPatcher, "EXPECTED_OCCURRENCES = 6\n");
+      fs.writeFileSync(incompleteExitPatcher, 'PINNED_HERMES_SEMVER = "0.18.0"\n');
 
       const result = spawnSync("bash", ["-c", ["set -euo pipefail", command].join("\n")], {
         encoding: "utf-8",
@@ -88,6 +101,7 @@ describe("Hermes doctor and config hash boundary", () => {
         path.join(libDir, "gateway-supervisor.sh"),
         path.join(libDir, "validate-hermes-env-secret-boundary.py"),
         path.join(libDir, "patch-hermes-session-list-preview.py"),
+        path.join(libDir, "patch-hermes-incomplete-chat-exit.py"),
         path.join(libDir, "seed-hermes-dashboard-config.py"),
         path.join(libDir, "hermes-runtime-config-guard.py"),
         path.join(libDir, "finalize-tirith-marker.py"),

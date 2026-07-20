@@ -129,6 +129,7 @@ COPY scripts/gateway-control.sh /usr/local/bin/nemoclaw-gateway-control
 COPY scripts/managed-gateway-control.py /usr/local/lib/nemoclaw/managed-gateway-control.py
 COPY agents/hermes/validate-env-secret-boundary.py /usr/local/lib/nemoclaw/validate-hermes-env-secret-boundary.py
 COPY agents/hermes/patch-session-list-preview.py /usr/local/lib/nemoclaw/patch-hermes-session-list-preview.py
+COPY agents/hermes/patch-incomplete-chat-exit.py /usr/local/lib/nemoclaw/patch-hermes-incomplete-chat-exit.py
 COPY agents/hermes/seed-dashboard-config.py /usr/local/lib/nemoclaw/seed-hermes-dashboard-config.py
 COPY agents/hermes/runtime-config-guard.py /usr/local/lib/nemoclaw/hermes-runtime-config-guard.py
 COPY agents/hermes/finalize-tirith-marker.py /usr/local/lib/nemoclaw/finalize-tirith-marker.py
@@ -142,7 +143,7 @@ COPY nemoclaw-blueprint/scripts/*.js /usr/local/lib/nemoclaw/preloads/
 # profile hook, bashrc hook, or root-owned helper mode. Remove it once the
 # minimum supported Hermes sandbox base tag guarantees those artifacts and
 # test/sandbox-rlimit-hooks.test.ts covers that base.
-RUN chmod 755 /usr/local/bin/nemoclaw-start /usr/local/lib/nemoclaw/sandbox-init.sh /usr/local/lib/nemoclaw/validate-hermes-env-secret-boundary.py /usr/local/lib/nemoclaw/patch-hermes-session-list-preview.py /usr/local/lib/nemoclaw/seed-hermes-dashboard-config.py /usr/local/lib/nemoclaw/hermes-runtime-config-guard.py /usr/local/lib/nemoclaw/finalize-tirith-marker.py /usr/local/lib/nemoclaw/hermes-mcp-config-transaction.py \
+RUN chmod 755 /usr/local/bin/nemoclaw-start /usr/local/lib/nemoclaw/sandbox-init.sh /usr/local/lib/nemoclaw/validate-hermes-env-secret-boundary.py /usr/local/lib/nemoclaw/patch-hermes-session-list-preview.py /usr/local/lib/nemoclaw/patch-hermes-incomplete-chat-exit.py /usr/local/lib/nemoclaw/seed-hermes-dashboard-config.py /usr/local/lib/nemoclaw/hermes-runtime-config-guard.py /usr/local/lib/nemoclaw/finalize-tirith-marker.py /usr/local/lib/nemoclaw/hermes-mcp-config-transaction.py \
     && chown root:root /usr/local/bin/nemoclaw-gateway-control /usr/local/lib/nemoclaw/gateway-supervisor.sh /usr/local/lib/nemoclaw/state-dir-guard.py /usr/local/lib/nemoclaw/managed-gateway-control.py /usr/local/lib/nemoclaw/build-hermes-mcp-digest.py /usr/local/lib/nemoclaw/openshell-child-visible-credentials.v0.0.85.json \
     && chmod 700 /usr/local/bin/nemoclaw-gateway-control \
     && chmod 500 /usr/local/lib/nemoclaw/state-dir-guard.py /usr/local/lib/nemoclaw/managed-gateway-control.py \
@@ -199,6 +200,20 @@ assert rows and rows[0]["id"] == session_id, rows
 assert rows[0]["preview"] == "NEMOCLAW_PREVIEW_LATEST", rows
 PY
 
+# Hermes v0.18.0 reports an iteration-exhausted quiet chat as
+# `completed=False, failed=False`, while its CLI derives process success from
+# `failed` alone. Patch the pinned source so automation receives a non-zero
+# status and a deterministic incomplete result instead of a model-generated
+# post-limit action that was never executed (#7104). Exact source-shape checks
+# in the patcher make a Hermes upgrade fail closed until this workaround is
+# reviewed for removal.
+RUN /usr/bin/python3 -I /usr/local/lib/nemoclaw/patch-hermes-incomplete-chat-exit.py /opt/hermes \
+    && /usr/bin/python3 -I /usr/local/lib/nemoclaw/patch-hermes-incomplete-chat-exit.py /opt/hermes \
+    && grep -Fq '_nemoclaw_strict_quiet_chat = True' /opt/hermes/cli.py \
+    && grep -Fq 'result.get("completed") is True' /opt/hermes/cli.py \
+    && grep -Fq 'Incomplete: Hermes exhausted its iteration budget' /opt/hermes/agent/turn_finalizer.py \
+    && /usr/bin/python3 -I -c 'import ast, pathlib; [ast.parse(path.read_text(encoding="utf-8"), filename=str(path)) for path in (pathlib.Path("/opt/hermes/cli.py"), pathlib.Path("/opt/hermes/agent/turn_finalizer.py"))]'
+
 # Cryptographic integrity gate for the security-critical Python entrypoints:
 # the wrapper and validator that enforce the runtime env secret boundary, plus
 # the descriptor-safe Tirith marker finalizer. Any content change MUST be
@@ -243,8 +258,9 @@ RUN hermes_version_output="$(/usr/local/bin/hermes --version)" \
     fi \
     && if [ "$hermes_semver" != "0.18.0" ] \
         && { grep -q '_translate_resumed_oneshot' /usr/local/lib/nemoclaw/hermes-wrapper.py \
-          || grep -q 'EXPECTED_OCCURRENCES' /usr/local/lib/nemoclaw/patch-hermes-session-list-preview.py; }; then \
-        echo "ERROR: installed Hermes ${hermes_semver} but Hermes v0.18.0 compatibility workarounds are still installed; re-review #5254 workaround removal before upgrading Hermes" >&2; \
+          || grep -q 'EXPECTED_OCCURRENCES' /usr/local/lib/nemoclaw/patch-hermes-session-list-preview.py \
+          || grep -q 'PINNED_HERMES_SEMVER' /usr/local/lib/nemoclaw/patch-hermes-incomplete-chat-exit.py; }; then \
+        echo "ERROR: installed Hermes ${hermes_semver} but Hermes v0.18.0 compatibility workarounds are still installed; re-review #5254 and #7104 workaround removal before upgrading Hermes" >&2; \
         exit 1; \
     fi
 # This runs before `/usr/local/bin/hermes` is moved to `hermes.real`, so the

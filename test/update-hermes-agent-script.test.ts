@@ -29,6 +29,7 @@ const CURRENT_INSTALLED_BASE = [
 
 const CURRENT_INSTALLED_DOCKERFILE = [
   "COPY agents/hermes/validate-hermes-env-secret-boundary.py /usr/local/lib/nemoclaw/validate-hermes-env-secret-boundary.py",
+  "COPY agents/hermes/patch-incomplete-chat-exit.py /usr/local/lib/nemoclaw/patch-hermes-incomplete-chat-exit.py",
   "COPY agents/hermes/seed-dashboard-config.py /usr/local/lib/nemoclaw/seed-hermes-dashboard-config.py",
   "COPY agents/hermes/build-mcp-digest.py /usr/local/lib/nemoclaw/build-hermes-mcp-digest.py",
   'RUN mcp_digest="$(/opt/hermes/.venv/bin/python -I /usr/local/lib/nemoclaw/build-hermes-mcp-digest.py --guard /usr/local/lib/nemoclaw/hermes-runtime-config-guard.py --config /sandbox/.hermes/config.yaml)"',
@@ -263,7 +264,7 @@ fi
     }
   });
 
-  it("refuses installed copies that predate the transactional MCP boundary", () => {
+  it("refuses installed copies that predate current MCP and incomplete-chat boundaries (#7104)", () => {
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-hermes-update-pre-mcp-"));
     const installedDockerfile = path.join(
       tmpHome,
@@ -275,7 +276,7 @@ fi
     );
     const installedAgentDockerfile = path.join(path.dirname(installedDockerfile), "Dockerfile");
     const preMcpDockerfile = CURRENT_INSTALLED_DOCKERFILE.replace(
-      /^(?:COPY (?:agents\/hermes\/(?:build-mcp-digest|mcp-config-transaction)\.py|src\/lib\/actions\/sandbox\/openshell-child-visible-credentials\.v0\.0\.85\.json) .*|RUN mcp_digest=.*build-hermes-mcp-digest\.py.*)\n/gm,
+      /^(?:COPY (?:agents\/hermes\/(?:build-mcp-digest|mcp-config-transaction|patch-incomplete-chat-exit)\.py|src\/lib\/actions\/sandbox\/openshell-child-visible-credentials\.v0\.0\.85\.json) .*|RUN mcp_digest=.*build-hermes-mcp-digest\.py.*)\n/gm,
       "",
     );
     fs.mkdirSync(path.dirname(installedDockerfile), { recursive: true });
@@ -303,6 +304,7 @@ fi
       expect(run.stdout).toContain("marker openshell-child-visible-credentials.v0.0.85.json");
       expect(run.stdout).toContain("marker COPY agents/hermes/build-mcp-digest.py");
       expect(run.stdout).toContain("marker /opt/hermes/.venv/bin/python -I");
+      expect(run.stdout).toContain("marker patch-hermes-incomplete-chat-exit.py");
       expect(fs.readFileSync(installedDockerfile, "utf-8")).toBe(CURRENT_INSTALLED_BASE);
       expect(fs.readFileSync(installedAgentDockerfile, "utf-8")).toBe(preMcpDockerfile);
     } finally {
