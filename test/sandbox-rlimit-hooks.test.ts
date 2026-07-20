@@ -554,6 +554,7 @@ describe("sandbox rlimit system hooks (#2173)", () => {
     const initLib = path.join(localLib, "sandbox-init.sh");
     const validator = path.join(localLib, "validate-hermes-env-secret-boundary.py");
     const sessionListPreviewPatcher = path.join(localLib, "patch-hermes-session-list-preview.py");
+    const incompleteChatExitPatcher = path.join(localLib, "patch-hermes-incomplete-chat-exit.py");
     const dashboardSeeder = path.join(localLib, "seed-hermes-dashboard-config.py");
     const runtimeGuard = path.join(localLib, "hermes-runtime-config-guard.py");
     const tirithMarkerFinalizer = path.join(localLib, "finalize-tirith-marker.py");
@@ -581,6 +582,7 @@ describe("sandbox rlimit system hooks (#2173)", () => {
       fs.writeFileSync(initLib, "# init fixture\n");
       fs.writeFileSync(validator, "# validator fixture\n");
       fs.writeFileSync(sessionListPreviewPatcher, "# session list preview patcher fixture\n");
+      fs.writeFileSync(incompleteChatExitPatcher, "# incomplete chat exit patcher fixture\n");
       fs.writeFileSync(dashboardSeeder, "# dashboard seeder fixture\n");
       fs.writeFileSync(runtimeGuard, "# runtime guard fixture\n");
       fs.writeFileSync(tirithMarkerFinalizer, "# Tirith marker finalizer fixture\n");
@@ -613,6 +615,10 @@ describe("sandbox rlimit system hooks (#2173)", () => {
         .replaceAll(
           "/usr/local/lib/nemoclaw/patch-hermes-session-list-preview.py",
           sessionListPreviewPatcher,
+        )
+        .replaceAll(
+          "/usr/local/lib/nemoclaw/patch-hermes-incomplete-chat-exit.py",
+          incompleteChatExitPatcher,
         )
         .replaceAll("/usr/local/lib/nemoclaw/seed-hermes-dashboard-config.py", dashboardSeeder)
         .replaceAll("/usr/local/lib/nemoclaw/hermes-runtime-config-guard.py", runtimeGuard)

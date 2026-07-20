@@ -898,6 +898,8 @@ In that case, `exec` returns the cleanup failure instead of the remote command's
 <AgentOnly variant="hermes">
 
 The exit code is the remote command's exit code.
+For the bundled Hermes quiet-chat path, a completed turn exits with status `0`, an interrupted turn exits with status `130`, and every other incomplete result exits non-zero.
+When Hermes exhausts its iteration budget in quiet mode, it prints a deterministic `Incomplete:` result instead of requesting another model-generated summary, so verify the requested artifacts before retrying.
 
 </AgentOnly>
 
@@ -1415,6 +1417,8 @@ When cleanup fails closed, `exec` returns the cleanup failure and reports both s
 <AgentOnly variant="hermes">
 
 The command exits with the remote command's exit code.
+For the bundled Hermes quiet-chat path, a completed turn exits with status `0`, an interrupted turn exits with status `130`, and every other incomplete result exits non-zero.
+When Hermes exhausts its iteration budget in quiet mode, it prints a deterministic `Incomplete:` result instead of requesting another model-generated summary, so verify the requested artifacts before retrying.
 
 </AgentOnly>
 

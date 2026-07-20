@@ -177,7 +177,7 @@ discover_installed_dockerfiles() {
 # Saved installed copies are only safe to rewrite when they already carry the
 # current Hermes integration contract. A legacy source tree with fresh pins
 # but stale Dockerfile/start/config code can rebuild an image that looks
-# version-current while missing the v0.17 runtime hardening.
+# version-current while missing the current runtime hardening.
 installed_copy_schema_error() {
   local dockerfile_base="$1"
   local dockerfile="${dockerfile_base%/Dockerfile.base}/Dockerfile"
@@ -197,6 +197,7 @@ installed_copy_schema_error() {
   else
     for item in \
       "validate-hermes-env-secret-boundary.py" \
+      "patch-hermes-incomplete-chat-exit.py" \
       "seed-hermes-dashboard-config.py" \
       "COPY agents/hermes/build-mcp-digest.py /usr/local/lib/nemoclaw/build-hermes-mcp-digest.py" \
       "/opt/hermes/.venv/bin/python -I /usr/local/lib/nemoclaw/build-hermes-mcp-digest.py --guard /usr/local/lib/nemoclaw/hermes-runtime-config-guard.py" \
