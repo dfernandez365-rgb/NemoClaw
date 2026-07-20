@@ -4,85 +4,164 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createSession } from "../../../state/onboard-session";
-import { handleProviderInferenceState } from "./provider-inference";
+import { rebuildProviderFlowOptions } from "../../authoritative-rebuild-target";
+import { mintProviderRecoveryReceipt } from "../../rebuild-route-handoff";
 import {
-  activatedRecoveryReceipt,
+  handleProviderInferenceState,
+  type ProviderInferenceStateOptions,
+} from "./provider-inference";
+import {
+  type Agent,
   baseOptions,
   baseSelection,
   createDeps,
+  type Gpu,
+  type Host,
 } from "./provider-inference.test-support";
 
 describe("authoritative provider inference recovery", () => {
-  it("stays enabled across messaging revalidation", async () => {
+  it("recovers an onboard-provenanced compatible route for active messaging without a host key (#7256)", async () => {
+    const sandboxName = "my-assistant";
+    const gatewayName = "nemoclaw";
+    const provider = "compatible-endpoint";
+    const model = "mock/channels-rebuild";
+    const endpointUrl = "https://compatible.example.test/v1";
+    const preferredInferenceApi = "openai-completions";
     const session = createSession({
-      sandboxName: "my-assistant",
-      provider: "compatible-endpoint",
-      model: "mock/channels-rebuild",
-      endpointUrl: "https://compatible.example.test/v1",
+      sandboxName,
+      provider,
+      model,
+      endpointUrl,
       credentialEnv: "COMPATIBLE_API_KEY",
-      preferredInferenceApi: "openai-completions",
+      preferredInferenceApi,
     });
-    const recoveredSelection = {
-      ...baseSelection,
-      model: "mock/channels-rebuild",
-      provider: "compatible-endpoint",
-      endpointUrl: "https://compatible.example.test/v1",
-      credentialEnv: "COMPATIBLE_API_KEY",
-      preferredInferenceApi: "openai-completions",
-      recoveredFromSandbox: true,
-      skipHostInferenceSmoke: true,
-      reuseGatewayCredentialWithoutLocalKey: true,
+    const route = {
+      provider,
+      model,
+      endpointUrl,
+      endpointSource: "onboard" as const,
+      preferredInferenceApi,
+      source: "registry" as const,
     };
-    const setupNim = vi.fn(async () => recoveredSelection);
+    const receipt = mintProviderRecoveryReceipt(
+      { sandboxName, gatewayName, provider, model, route },
+      { nonce: "nonce-onboard-compatible", expiresAtMs: Number.MAX_SAFE_INTEGER },
+    );
+    const recovery = rebuildProviderFlowOptions(
+      {
+        authoritativeResumeConfig: true,
+        resume: true,
+        recreateSandbox: true,
+        onboardLockAlreadyHeld: true,
+        targetGatewayName: gatewayName,
+        targetGatewayPort: 8080,
+        endpointSource: "onboard",
+        providerRecoveryReceipt: receipt,
+      },
+      {
+        sandboxName,
+        provider,
+        model,
+        endpointUrl,
+        credentialEnv: "COMPATIBLE_API_KEY",
+        preferredInferenceApi,
+        session,
+      },
+    );
+    const setupNim = vi.fn(async (_gpu, _sandbox, _agent, recoverProvider: boolean) =>
+      recoverProvider
+        ? {
+            ...baseSelection,
+            model,
+            provider,
+            endpointUrl,
+            endpointSource: "onboard" as const,
+            credentialEnv: "COMPATIBLE_API_KEY",
+            preferredInferenceApi,
+            recoveredFromSandbox: true,
+            skipHostInferenceSmoke: true,
+            reuseGatewayCredentialWithoutLocalKey: true,
+          }
+        : {
+            ...baseSelection,
+            model: "nvidia/build-default",
+            provider: "nvidia-prod",
+            credentialEnv: "NVIDIA_INFERENCE_API_KEY",
+          },
+    );
+    let recoveryAuthorization: (() => boolean) | undefined;
+    const setupInference = vi.fn<
+      ProviderInferenceStateOptions<Gpu, Agent, Host>["deps"]["setupInference"]
+    >(async (...args) => {
+      recoveryAuthorization = args[7]?.isRecordedProviderRecoveryAuthorized;
+      return { ok: true };
+    });
     const { deps, calls } = createDeps({
       setupNim,
+      setupInference,
       hydrateCredentialEnv: vi.fn(() => null),
       isInferenceRouteReady: vi.fn(() => true),
     });
-
-    const { receipt, ledger } = activatedRecoveryReceipt({
-      sandboxName: "my-assistant",
-      sessionId: session.sessionId,
-    });
+    calls.complete.mockResolvedValue(session);
+    const options = baseOptions(deps, session);
 
     const result = await handleProviderInferenceState({
-      ...baseOptions(deps, session),
+      ...options,
       resume: true,
-      authoritativeResumeConfig: true,
-      providerRecoveryReceipt: receipt,
-      providerRecoveryReceiptLedger: ledger,
-      sandboxName: "my-assistant",
+      authoritativeResumeConfig: recovery.authoritativeResumeConfig,
+      providerRecoveryReceipt: recovery.providerRecoveryReceipt,
+      providerRecoveryReceiptLedger: recovery.providerRecoveryReceiptLedger,
+      sandboxName,
       selectedMessagingChannels: ["telegram"],
+      initial: {
+        ...options.initial,
+        provider,
+        model,
+        endpointUrl,
+        endpointSource: "onboard",
+        onboardEndpointUrl: endpointUrl,
+        credentialEnv: "COMPATIBLE_API_KEY",
+        preferredInferenceApi,
+      },
     });
 
     expect(setupNim).toHaveBeenCalledWith(
       { type: "nvidia" },
-      "my-assistant",
+      sandboxName,
       null,
       true,
-      "nemoclaw",
+      gatewayName,
       expect.any(Function),
       expect.any(Function),
       session.sessionId,
     );
-    expect(calls.setupInference).toHaveBeenCalledWith(
-      "my-assistant",
-      "mock/channels-rebuild",
-      "compatible-endpoint",
-      "https://compatible.example.test/v1",
+    expect(result).toMatchObject({
+      provider,
+      model,
+      endpointUrl,
+      endpointSource: "onboard",
+    });
+    expect(setupInference).toHaveBeenCalledWith(
+      sandboxName,
+      model,
+      provider,
+      endpointUrl,
       "COMPATIBLE_API_KEY",
       null,
       [],
       expect.objectContaining({
+        endpointSource: "onboard",
+        onboardEndpointUrl: endpointUrl,
         skipHostInferenceSmoke: true,
         reuseGatewayCredentialWithoutLocalKey: true,
-        reservationSessionId: session.sessionId,
+        isRecordedProviderRecoveryAuthorized: expect.any(Function),
       }),
     );
-    expect(result).toMatchObject({
-      provider: "compatible-endpoint",
-      model: "mock/channels-rebuild",
-      endpointUrl: "https://compatible.example.test/v1",
-    });
+    expect(recoveryAuthorization?.()).toBe(true);
+    expect(
+      setupInference.mock.calls.some(
+        ([, , selectedProvider]) => selectedProvider === "nvidia-prod",
+      ),
+    ).toBe(false);
   });
 });
