@@ -28,6 +28,7 @@ import { runSandboxAutoPairApprovalPass } from "./auto-pair-approval";
 import { buildConfigPermsCheck } from "./doctor-config-perms";
 import { captureHostCommand } from "./doctor-host-command";
 import { collectInferenceChecks, type DoctorInferenceRoute } from "./doctor-inference";
+import { collectManagedLifecycleChecks } from "./doctor-managed-lifecycle";
 import { collectMessagingDoctorChecks } from "./doctor-messaging";
 import {
   buildDoctorReport,
@@ -412,6 +413,7 @@ async function collectDoctorChecks(
     ...host.checks,
     ...gateway.checks,
     ...sandbox.checks,
+    ...collectManagedLifecycleChecks(sandboxName, sb),
     ...(await collectInferenceChecks(sandboxName, route, sandbox.reachable, {
       includeServingProcessCheck: shouldReportServingProcessHealth(sb?.agent),
     })),
