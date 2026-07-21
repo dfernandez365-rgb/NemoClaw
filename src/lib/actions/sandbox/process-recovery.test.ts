@@ -52,25 +52,77 @@ describe("recreated sandbox OpenShell readiness", () => {
     expect(sleeps).toEqual([3, 3]);
   });
 
-  it("fails immediately on an unknown OpenShell error", () => {
+  it("retries an inconclusive managed-health guard before probing OpenShell (#7273)", () => {
+    const beforeProbe = vi.fn().mockReturnValueOnce(null).mockReturnValueOnce(true);
+    const captureOpenshellImpl = vi.fn(() => ({
+      status: 0,
+      output: "",
+      stdout: "",
+      stderr: "",
+    }));
+    const onFailure = vi.fn();
+    const sleeps: number[] = [];
+
+    expect(
+      waitForRecreatedSandboxOpenShellReady("recreated-box", {
+        beforeProbe,
+        captureOpenshellImpl,
+        intervalSeconds: 3,
+        onFailure,
+        sleepImpl: (seconds) => sleeps.push(seconds),
+        timeoutSeconds: 6,
+      }),
+    ).toBe(true);
+    expect(beforeProbe).toHaveBeenCalledTimes(2);
+    expect(captureOpenshellImpl).toHaveBeenCalledOnce();
+    expect(sleeps).toEqual([3]);
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  it("fails immediately on a definitive managed-health refusal (#7273)", () => {
+    const beforeProbe = vi.fn(() => false);
+    const captureOpenshellImpl = vi.fn();
+    const onFailure = vi.fn();
+
+    expect(
+      waitForRecreatedSandboxOpenShellReady("recreated-box", {
+        beforeProbe,
+        captureOpenshellImpl,
+        intervalSeconds: 3,
+        onFailure,
+        sleepImpl: () => {
+          throw new Error("definitive failure must not retry");
+        },
+        timeoutSeconds: 30,
+      }),
+    ).toBe(false);
+    expect(beforeProbe).toHaveBeenCalledOnce();
+    expect(captureOpenshellImpl).not.toHaveBeenCalled();
+    expect(onFailure).toHaveBeenCalledWith("managed-health-failed");
+  });
+
+  it("fails immediately on an unknown OpenShell error (#7273)", () => {
     const captureOpenshellImpl = vi.fn(() => ({
       status: 1,
       output: "permission denied",
       stdout: "",
       stderr: "permission denied",
     }));
+    const onFailure = vi.fn();
     const sleeps: number[] = [];
 
     expect(
       waitForRecreatedSandboxOpenShellReady("recreated-box", {
         captureOpenshellImpl,
         intervalSeconds: 3,
+        onFailure,
         sleepImpl: (seconds) => sleeps.push(seconds),
         timeoutSeconds: 30,
       }),
     ).toBe(false);
     expect(captureOpenshellImpl).toHaveBeenCalledOnce();
     expect(sleeps).toEqual([]);
+    expect(onFailure).toHaveBeenCalledWith("openshell-readiness-failed");
   });
 
   it("does not retry an outcome-uncertain OpenShell timeout", () => {

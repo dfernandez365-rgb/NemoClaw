@@ -212,7 +212,42 @@ describe("checkAndRecoverSandboxProcesses supervisor relaunch", () => {
     expect(finalize).toHaveBeenCalledWith(true);
   });
 
-  it("retains a healthy replacement but does not start a forward when OpenShell stays unready", () => {
+  it.each([
+    {
+      label: "an inconclusive managed-health guard",
+      managedReadiness: { status: 1, stdout: "", stderr: "SUPERVISOR_BUSY" },
+      openshellReadiness: { status: 0, output: "", stdout: "", stderr: "" },
+      expectedOpenshellCalls: 0,
+      expectedDetail:
+        "the recreated sandbox managed-health guard remained inconclusive within the readiness deadline, so the primary dashboard/API host forward was not started",
+    },
+    {
+      label: "a definitive managed-health failure",
+      managedReadiness: { status: 1, stdout: "", stderr: "SUPERVISOR_UNAVAILABLE" },
+      openshellReadiness: { status: 0, output: "", stdout: "", stderr: "" },
+      expectedOpenshellCalls: 0,
+      expectedDetail:
+        "the recreated sandbox failed its definitive managed-health guard, so the primary dashboard/API host forward was not started",
+    },
+    {
+      label: "an unexpected OpenShell error",
+      managedReadiness: { status: 0, stdout: "GATEWAY_PID=4242\n", stderr: "" },
+      openshellReadiness: {
+        status: 1,
+        output: "permission denied: private runtime detail",
+        stdout: "",
+        stderr: "permission denied: private runtime detail",
+      },
+      expectedOpenshellCalls: 1,
+      expectedDetail:
+        "the recreated sandbox did not become ready in OpenShell, so the primary dashboard/API host forward was not started",
+    },
+  ])("reports $label without starting a forward (#7273)", ({
+    managedReadiness,
+    openshellReadiness,
+    expectedOpenshellCalls,
+    expectedDetail,
+  }) => {
     mockOpenClawSandbox("unready-box");
     setImmediateRecoveryPolling();
     const finalize = vi.fn(() => ({ backupRemoved: true, rolledBack: false }));
@@ -225,12 +260,18 @@ describe("checkAndRecoverSandboxProcesses supervisor relaunch", () => {
       stdout: "",
       stderr: "SUPERVISOR_NOT_RUNNING",
     }));
-    const requestPinnedGatewaySupervisorAction = vi.fn(() => ({
+    const acceptedProbe = {
       status: 0,
       stdout: "GATEWAY_PID=4242\n",
       stderr: "",
-    }));
-    const waitForRecreatedSandboxOpenShellReadyImpl = vi.fn(() => false);
+    };
+    const requestPinnedGatewaySupervisorAction = vi
+      .fn()
+      .mockReturnValueOnce(acceptedProbe)
+      .mockReturnValue(managedReadiness);
+    const captureOpenshell = vi
+      .spyOn(openshellRuntime, "captureOpenshell")
+      .mockReturnValue(openshellReadiness);
     const runOpenshell = vi.spyOn(openshellRuntime, "runOpenshell");
 
     const result = checkAndRecoverSandboxProcesses("unready-box", {
@@ -239,7 +280,6 @@ describe("checkAndRecoverSandboxProcesses supervisor relaunch", () => {
       requestGatewaySupervisorAction,
       requestPinnedGatewaySupervisorAction,
       relaunchManagedSupervisorSessionImpl,
-      waitForRecreatedSandboxOpenShellReadyImpl,
     });
 
     expect(result).toMatchObject({
@@ -248,14 +288,18 @@ describe("checkAndRecoverSandboxProcesses supervisor relaunch", () => {
       recovered: true,
       forwardRecovered: false,
       forwardRecoveryFailed: true,
-      forwardRecoveryFailureDetail: expect.stringContaining("did not become ready in OpenShell"),
+      forwardRecoveryFailureDetail: expectedDetail,
     });
     expect(finalize).toHaveBeenCalledOnce();
     expect(finalize).toHaveBeenCalledWith(true);
-    expect(waitForRecreatedSandboxOpenShellReadyImpl).toHaveBeenCalledWith(
+    expect(requestPinnedGatewaySupervisorAction).toHaveBeenNthCalledWith(
+      2,
       "unready-box",
-      expect.objectContaining({ beforeProbe: expect.any(Function), timeoutSeconds: 30 }),
+      "probe",
+      1,
+      "replacement-container-id",
     );
+    expect(captureOpenshell).toHaveBeenCalledTimes(expectedOpenshellCalls);
     expect(runOpenshell).not.toHaveBeenCalled();
   });
 
