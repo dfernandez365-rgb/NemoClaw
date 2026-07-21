@@ -319,8 +319,6 @@ export const VLLM_MODELS: readonly VllmModelDef[] = [
       "qwen3_coder",
       "--reasoning-parser",
       "qwen3",
-      "--speculative-config",
-      `'{"method":"mtp","num_speculative_tokens":3,"moe_backend":"triton"}'`,
       "--load-format",
       "fastsafetensors",
     ],

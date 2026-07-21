@@ -154,6 +154,9 @@ When you start managed vLLM outside the installer express flow, NemoClaw uses th
 | DGX Station | `deepseek-ai/DeepSeek-V4-Flash` |
 | Linux with an NVIDIA GPU | `nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8` |
 
+For `nvidia/Qwen3.6-35B-A3B-NVFP4`, the managed DGX Spark default keeps `--async-scheduling` and does not enable MTP speculative decoding.
+The default retains the registered context, concurrency, batching, quantization, cache, parser, and load-format arguments.
+
 On DGX Station, accepting the installer express prompt sets `NEMOCLAW_VLLM_MODEL=nemotron-3-ultra-550b-a55b` and overrides the profile default.
 Pass `--station-deepseek` to select the existing `deepseek-v4-flash` recipe while retaining the same one-confirmation express flow.
 The flag requires an interactive terminal; in a `curl | bash` pipeline, `/dev/tty` must be available.
@@ -236,7 +239,7 @@ The host checks the token before `docker pull`, so a missing or empty token stop
 
 ## Add Managed Serve Arguments
 
-Set `NEMOCLAW_VLLM_EXTRA_ARGS_JSON` to a JSON array of individual non-blank `vllm serve` tokens for operator-owned options that are not in the registry.
+Set `NEMOCLAW_VLLM_EXTRA_ARGS_JSON` to a JSON array of individual non-blank `vllm serve` tokens for operator-owned options and overrides.
 NemoClaw trims and validates the array before downloads, shell-quotes each token, and appends the tokens after the registry defaults.
 
 ```bash
@@ -246,6 +249,18 @@ NEMOCLAW_PROVIDER=install-vllm \
 ```
 
 If the selected image does not support an argument, the managed container exits and NemoClaw prints the log tail.
+
+For the managed Qwen3.6 profile on DGX Spark, use this optional profile when containment is more important than throughput.
+
+```bash
+NEMOCLAW_PROVIDER=install-vllm \
+  NEMOCLAW_VLLM_EXTRA_ARGS_JSON='["--no-async-scheduling","--max-model-len","32768","--max-num-seqs","1","--max-num-batched-tokens","4096"]' \
+  $$nemoclaw onboard --non-interactive
+```
+
+This profile disables async scheduling, limits each request to `32,768` tokens, permits one active sequence, and limits each batch to `4,096` tokens.
+It intentionally reduces concurrency and throughput.
+The physical DGX Spark matrix did not reproduce a complete host freeze, so neither profile proves that a freeze cannot occur.
 
 ## Related Topics
 

@@ -19,6 +19,10 @@ NemoClaw v0.0.90 keeps managed-image routing identifiers out of secret-shaped bu
   Station Express keeps Nemotron 3 Ultra 550B as the default, while `--station-deepseek` selects DeepSeek V4 Flash.
   Related guidance adds bounded OpenIB repair or disable steps, clarifies legacy recovery state limits, and gives platform-specific setup its own navigation group.
   For more information, refer to [Prepare DGX Station to Install NemoClaw](/user-guide/openclaw/get-started/additional-setup/dgx-station-preparation), the [NemoClaw Quickstart with OpenClaw](/user-guide/openclaw/get-started/quickstart), and [Recover and Rebuild Sandboxes](/user-guide/openclaw/manage-sandboxes/operate-sandboxes/recover-and-rebuild-sandboxes).
+- The managed DGX Spark Qwen3.6 profile now leaves MTP speculative decoding disabled while retaining async scheduling and its other registered serve arguments.
+  The vLLM setup guide also documents an optional profile that bounds context, concurrency, and batch size while disabling async scheduling.
+  Physical DGX Spark testing did not reproduce a complete host freeze, so these profiles do not establish freeze prevention.
+  For more information, refer to [Set Up vLLM](/user-guide/openclaw/inference/local-inference/set-up-vllm).
 
 ## v0.0.89
 
